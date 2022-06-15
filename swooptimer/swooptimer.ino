@@ -6,7 +6,10 @@ const int pin[nSensors] = {2, 3, 4, 5};
 const int pinTimer = 7;
 const unsigned long maxLoopTime = 3;
 const unsigned int reportInterval = 1000; // ms
-const unsigned int numBlocksRequired = 200;
+const unsigned int numBlocksRequired = 10;
+int pinsSet = 0;
+int pinsReported = 0;
+unsigned long newTime = 0;
 
 // Global variables
 int blockedCounter[nSensors];
@@ -25,50 +28,68 @@ void setup()
   t.oscillate(pinTimer, 100, LOW);
   t.every(reportInterval, reportQuality);
 
+
+  noInterrupts();           // disable all interrupts
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1  = 0;
+  OCR1A = 800;              // compare match register 16MHz/256/2Hz
+  TCCR1B |= (1 << WGM12);   // CTC mode
+  TCCR1B |= (1 << CS10);    // 256 prescaler 
+  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
+  interrupts();
+}
+
+ISR(TIMER1_COMPA_vect)
+{
+  for(int s = 0; s < nSensors; s++)
+  {
+    if(digitalRead(pin[s]) == HIGH) 
+    {
+      if(blockedCounter[s] == numBlocksRequired - 1) // -1 to avoid overriding newTime
+      {
+        {
+          newTime = millis();
+          pinsSet |= 1 << s;
+        }
+      }
+      else if(blockedCounter[s] < numBlocksRequired)
+      {
+        blockedCounter[s]++;
+      }
+    }
+    else 
+    {
+      if(blockedCounter[s] == 0)
+      {
+        pinsSet &= ~(1 << s);
+        pinsReported &= ~(1 << s);
+      }
+      else
+      {
+        blockedCounter[s]--;
+      }
+      lastUnblocked[s] = millis();
+    }
+  }
 }
 
 unsigned long lastTime = 0;
 void loop() 
 {
-  // Check if loop is taking too long
-  unsigned long newTime = millis();
-  if(lastTime + maxLoopTime < millis())
-  {
-    Serial.write("D,");
-    Serial.print(lastTime);
-    Serial.write(",");
-    Serial.print(newTime);
-    Serial.write(".\r\n");
-
-    // Reading time after printing delay error to avoid infinite loop
-    newTime = millis();
-  }
-  lastTime = newTime;
-
   t.update();
 
   // Iterate through sensors to detect 
   for(int s = 0; s < nSensors; s++)
   {
-    if(digitalRead(pin[s]) == HIGH) 
+    if((pinsSet & (1 << s)) != 0 && (pinsReported & (1 << s)) == 0)
     {
-      if(blockedCounter[s] == numBlocksRequired)
-      {
-        Serial.write("G,");
-        Serial.print(s+1);
-        Serial.write(",");
-        Serial.print(newTime);
-        Serial.write(".\r\n");
-      }
-      if(blockedCounter[s] < numBlocksRequired+1)
-      {
-        blockedCounter[s]++;
-      }
-    }
-    else
-    {
-      blockedCounter[s] = 0;
-      lastUnblocked[s] = newTime;
+      pinsReported |= 1 << s;
+      Serial.write("G,");
+      Serial.print(s+1);
+      Serial.write(",");
+      Serial.print(newTime);
+      Serial.write(".\r\n");
     }
   }
 }
